@@ -183,17 +183,12 @@ void *thread_analyzer(void *arg) {
 
 void *thread_printer(void *arg) {
     while (true) {
-        pthread_mutex_lock(&mutex);
-        // pthread_cond_wait(&cond_analyze, &mutex);
-
         printf("Cond analyze signal recieved\n");
         printf("CPU Usage: %.2f%%\n", usage);
 
         if (List) printLinkedList(List);
 
         sleep(2);
-        // pthread_cond_signal(&cond_printer);
-        pthread_mutex_unlock(&mutex);
     }
 
     pthread_exit(NULL);
