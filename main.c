@@ -23,6 +23,7 @@ bool launched = false;
 
 int inc = 10;
 bool odd = false;
+double usage = 0.0;
 
 pthread_mutex_t mutex;
 
@@ -38,7 +39,6 @@ struct LinkedList *PreviousList;
 
 // This function alternates data in '/proc/stat' file as the program is run on Mac device
 void alternate_data() {
-    printf("Hello from alternate data!\n");
     FILE *file = fopen(PROC_STAT_FILE, "w");
     if (file == NULL) {
         printf("Error opening file\n");
@@ -50,16 +50,15 @@ void alternate_data() {
         return;
     }
     struct Node *CurrentNode = List->head;
-    printf("Elements in the linked list:\n");
 
     struct CPU_Stats stats;
     stats = getAtPosition(List, 0)->data;
     fprintf(file, "%s %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu\n",
-            stats.name, stats.user+(inc*8), stats.nice+(inc*8), stats.system+(inc*8), stats.idle+(inc*8), stats.iowait, stats.irq+(inc*8), stats.softirq, stats.steal, stats.guest, stats.guest_nice);
+            stats.name, stats.user+(inc*8), stats.nice+(inc*8), stats.system+(inc*8), stats.idle+(inc*8), stats.iowait, stats.irq, stats.softirq+(inc*8), stats.steal, stats.guest, stats.guest_nice);
     for (size_t i = 1; i < List->size-1; i++) {
         stats = getAtPosition(List, i)->data;
         fprintf(file, "%s %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu\n", 
-                stats.name, stats.user+inc, stats.nice+inc, stats.system+inc, stats.idle+inc, stats.iowait, stats.irq+inc, stats.softirq, stats.steal, stats.guest, stats.guest_nice);
+                stats.name, stats.user+inc, stats.nice+inc, stats.system+inc, stats.idle+inc, stats.iowait, stats.irq, stats.softirq+inc, stats.steal, stats.guest, stats.guest_nice);
     }
     stats = getAtPosition(List, List->size-1)->data;
     fprintf(file, "%s %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu\n",
@@ -84,7 +83,8 @@ void *thread_reader(void *arg) {
     while (true) {
         pthread_mutex_lock(&mutex);
         if (launched) {
-            pthread_cond_wait(&cond_printer, &mutex);
+            //pthread_cond_wait(&cond_printer, &mutex);
+            pthread_cond_wait(&cond_analyze, &mutex);
             printf("Cond printer signal recieved\n");
             sleep(1);
         } else {
@@ -138,7 +138,6 @@ void *thread_reader(void *arg) {
 }
 
 void *thread_analyzer(void *arg) {
-    printf("Thread analyzer\n");
     struct CPU_Stats stats; 
 
     unsigned long long prevIdle = 0;
@@ -155,6 +154,7 @@ void *thread_analyzer(void *arg) {
 
     while (true) {
         pthread_mutex_lock(&mutex);
+        
         pthread_cond_wait(&cond_read, &mutex);
 
         printf("Cond read signal recieved\n");
@@ -168,9 +168,7 @@ void *thread_analyzer(void *arg) {
         totalDiff = currTotal - prevTotal;
         idleDiff = currIdle - prevIdle;
 
-        double usage = (double)(totalDiff - idleDiff) / totalDiff * 100.0;
-
-        printf("CPU Usage: %.4f%%\n", usage);
+        usage = (usage + ((double)(totalDiff - idleDiff) / totalDiff * 100.0)) / 2;
 
         prevIdle = currIdle;
         prevNonIdle = currNonIdle;
@@ -184,16 +182,17 @@ void *thread_analyzer(void *arg) {
 }
 
 void *thread_printer(void *arg) {
-    printf("Thread printer\n");
     while (true) {
         pthread_mutex_lock(&mutex);
-        pthread_cond_wait(&cond_analyze, &mutex);
+        // pthread_cond_wait(&cond_analyze, &mutex);
 
         printf("Cond analyze signal recieved\n");
+        printf("CPU Usage: %.2f%%\n", usage);
 
-        printLinkedList(List);
+        if (List) printLinkedList(List);
 
-        pthread_cond_signal(&cond_printer);
+        sleep(2);
+        // pthread_cond_signal(&cond_printer);
         pthread_mutex_unlock(&mutex);
     }
 
