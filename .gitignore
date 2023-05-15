@@ -7,5 +7,6 @@ CMakeCache.txt
 cmake_install.cmake
 cpu_usage_app
 MakeFile
+log.txt
 
 

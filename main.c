@@ -19,9 +19,11 @@
 #endif
 
 bool launched = false;
+bool signal_watchdog_read = false;
+bool signal_watchdog_analyze = false;
+bool signal_watchdog_print = false;
+bool signal_watchdog_log = false;
 
-// int inc = 10;
-// bool odd = false;
 double usage = 0.0;
 
 pthread_mutex_t mutex;
@@ -34,7 +36,6 @@ pthread_cond_t cond_logger;
 pthread_cond_t cond_sigterm;
 
 struct LinkedList *List;
-struct LinkedList *PreviousList;
 
 // This function alternates data in '/proc/stat' file as the program is run on Mac device
 // On Mac the program can be used only for demo
@@ -87,15 +88,12 @@ void alternate_data() {
 }
 
 void *thread_reader(void *arg) {
-    printf("Thread reader\n");
-
     char buffer[MAX_STRLEN];
     FILE *file;
 
     while (true) {
         pthread_mutex_lock(&mutex);
         if (launched) {
-            //pthread_cond_wait(&cond_printer, &mutex);
             pthread_cond_wait(&cond_analyze, &mutex);
             printf("Cond printer signal received\n");
             sleep(1);
@@ -107,10 +105,7 @@ void *thread_reader(void *arg) {
             pthread_exit(NULL);
         }
 
-        if (List) {
-            PreviousList = copyLinkedList(List);
-            freeLinkedList(List);
-        }
+        if (List) freeLinkedList(List);
         List = (struct LinkedList*)malloc(sizeof(struct LinkedList));
         initLinkedList(List);
 
@@ -143,6 +138,7 @@ void *thread_reader(void *arg) {
 
         pthread_cond_signal(&cond_read);
         pthread_mutex_unlock(&mutex);
+        signal_watchdog_read = true;
     }
 
     pthread_exit(NULL);
@@ -165,7 +161,6 @@ void *thread_analyzer(void *arg) {
 
     while (true) {
         pthread_mutex_lock(&mutex);
-        
         pthread_cond_wait(&cond_read, &mutex);
 
         printf("Cond read signal received\n");
@@ -179,12 +174,13 @@ void *thread_analyzer(void *arg) {
         totalDiff = currTotal - prevTotal;
         idleDiff = currIdle - prevIdle;
 
-        usage = (usage + ((double)(totalDiff - idleDiff) / totalDiff * 100.0)) / 2;
+        if (idleDiff != totalDiff) usage = (usage + ((double)(totalDiff - idleDiff) / totalDiff * 100.0)) / 2;
 
         prevIdle = currIdle;
         prevNonIdle = currNonIdle;
         prevTotal = currTotal;
 
+        signal_watchdog_analyze = true;
         pthread_cond_signal(&cond_analyze);
         pthread_mutex_unlock(&mutex);
     }
@@ -194,35 +190,88 @@ void *thread_analyzer(void *arg) {
 
 void *thread_printer(void *arg) {
     while (true) {
-        printf("Cond analyze signal recieved\n");
         printf("CPU Usage: %.2f%%\n", usage);
-
-        if (List) printLinkedList(List);
-
-        sleep(2);
+        sleep(1);
+        signal_watchdog_print = true;
+        pthread_cond_signal(&cond_printer);
     }
 
     pthread_exit(NULL);
 }
 
 void *thread_watchdog(void *arg) {
-    printf("Thread watchdog\n");
+    while (true) {
+        sleep(2);
+        if (!signal_watchdog_read) {
+            printf("Error: Thread Reader did not send message within 2 seconds.\n");
+            break;
+        }
+        if (!signal_watchdog_analyze) {
+            printf("Error: Thread Analyzer did not send message within 2 seconds.\n");
+            break;
+        }
+        if (!signal_watchdog_print) {
+            printf("Error: Thread Printer did not send message within 2 seconds.\n");
+            break;
+        }
+        if (!signal_watchdog_log) {
+            printf("Error: Thread Logger did not send message within 2 seconds.\n");
+            break;
+        }
+
+        signal_watchdog_read = false;
+        signal_watchdog_analyze = false;
+        signal_watchdog_print = false;
+        signal_watchdog_log = false;
+    }
+
+    exit(EXIT_FAILURE);
     pthread_exit(NULL);
 }
 
 void *thread_logger(void *arg) {
-    printf("Thread logger\n");
+    FILE* file = NULL;
+    time_t currentTime;
+    struct tm* timeInfo = NULL;
+
+    while (true) {
+        currentTime = time(NULL);
+        timeInfo = localtime(&currentTime);
+
+        char timestamp[20];
+        strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", timeInfo);
+
+        file = fopen("log.txt", "a");
+        if (file == NULL) {
+            printf("Error opening log file.\n");
+            pthread_exit(NULL);
+        }
+
+        pthread_cond_wait(&cond_read, &mutex);
+        fprintf(file, "[%s] %s\n", timestamp, " - Reader signal");
+        signal_watchdog_log = true;
+
+        pthread_cond_wait(&cond_analyze, &mutex);
+        fprintf(file, "[%s] %s\n", timestamp, " - Analyzer signal");
+        signal_watchdog_log = true;
+
+        pthread_cond_wait(&cond_printer, &mutex);
+        fprintf(file, "[%s] %s\n", timestamp, " - Printer signal");
+        signal_watchdog_log = true;
+
+        fclose(file);
+    }
+
     pthread_exit(NULL);
 }
 
 void *thread_sigterm_handler(void *arg) {
-    printf("Thread handler\n");
     pthread_exit(NULL);
 }
 
 int main() {
     srand(time(NULL));
-    
+
     pthread_mutex_init(&mutex, NULL);
 
     pthread_cond_init(&cond_read, NULL);
@@ -234,7 +283,6 @@ int main() {
 
     pthread_t threads[NUM_THREADS];
     List = NULL;
-    PreviousList = NULL;
 
     if (pthread_create(&threads[0], NULL, thread_reader, NULL) != 0) {
         printf("Error creating thread reader!\n");
