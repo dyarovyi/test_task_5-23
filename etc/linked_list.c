@@ -1,6 +1,5 @@
 #include "linked_list.h"
 
-// Function to create a new node
 struct Node* createNode(struct CPU_Stats data) {
     struct Node *NewNode = (struct Node*)malloc(sizeof(struct Node));
     if (NewNode == NULL) {
@@ -12,13 +11,11 @@ struct Node* createNode(struct CPU_Stats data) {
     return NewNode;
 }
 
-// Function to initialize the linked list
 void initLinkedList(struct LinkedList *list) {
     list->head = NULL;
     list->size = 0;
 }
 
-// Function to make a copy of the linked list
 struct LinkedList* copyLinkedList(const struct LinkedList *OriginalList) {
     struct LinkedList *NewList = (struct LinkedList*)malloc(sizeof(struct LinkedList));
     if (NewList == NULL) {
@@ -55,7 +52,6 @@ struct LinkedList* copyLinkedList(const struct LinkedList *OriginalList) {
     return NewList;
 }
 
-// Function to insert a node at the end of the linked list
 void pushBack(struct LinkedList *list, struct CPU_Stats data) {
     struct Node *NewNode = createNode(data);
     if (NewNode == NULL) {
@@ -73,7 +69,6 @@ void pushBack(struct LinkedList *list, struct CPU_Stats data) {
     list->size++;
 }
 
-// Function to delete a node at a given position in the linked list
 void deleteAtPosition(struct LinkedList *list, size_t position) {
     if (list->head == NULL) {
         printf("Linked list is empty.\n");
@@ -101,7 +96,6 @@ void deleteAtPosition(struct LinkedList *list, size_t position) {
     list->size--;
 }
 
-// Function to get the element at a given position in the linked list
 struct Node* getAtPosition(struct LinkedList *list, size_t position) {
     if (list->head == NULL) {
         printf("Linked list is empty.\n");
@@ -120,12 +114,10 @@ struct Node* getAtPosition(struct LinkedList *list, size_t position) {
     return CurrentNode;
 }
 
-// Function to get the number of elements in the linked list
 size_t getSize(struct LinkedList *list) {
     return list->size;
 }
 
-// Function to print all elements of the linked list
 void printLinkedList(struct LinkedList *list) {
     if (list->head == NULL) {
         printf("Linked list is empty.\n");
@@ -152,7 +144,6 @@ void printLinkedList(struct LinkedList *list) {
     printf("\n");
 }
 
-// Function to free the memory allocated for the linked list
 void freeLinkedList(struct LinkedList *list) {
     struct Node *CurrentNode = list->head;
     while (CurrentNode != NULL) {

@@ -5,20 +5,24 @@
 #include <stdbool.h>
 #include <unistd.h>
 #include <time.h>
+#include <signal.h>
 
-#include "etc/linked_list.c"
-
-#define NUM_THREADS 6
+#define NUM_THREADS 5
 #define MAX_STRLEN 1024
-#define MAX_CPUS 16
+#define MAX_CPUS 8
 
 #ifdef __APPLE__
+    #include "demo.c"
     #define PROC_STAT_FILE "proc/stat"
 #elif __linux__
+    #include "etc/linked_list.c"
     #define PROC_STAT_FILE "/proc/stat"
 #endif
 
-bool launched = false;
+bool flag_read = true;
+bool flag_analyze = false;
+bool flag_print = false;
+
 bool signal_watchdog_read = false;
 bool signal_watchdog_analyze = false;
 bool signal_watchdog_print = false;
@@ -26,65 +30,20 @@ bool signal_watchdog_log = false;
 
 double usage = 0.0;
 
-pthread_mutex_t mutex;
+pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
-pthread_cond_t cond_read;
-pthread_cond_t cond_analyze;
-pthread_cond_t cond_printer;
-pthread_cond_t cond_watchdog;
-pthread_cond_t cond_logger;
-pthread_cond_t cond_sigterm;
+pthread_cond_t cond_read = PTHREAD_COND_INITIALIZER;
+pthread_cond_t cond_analyze = PTHREAD_COND_INITIALIZER;
+pthread_cond_t cond_printer = PTHREAD_COND_INITIALIZER;
+pthread_cond_t cond_watchdog = PTHREAD_COND_INITIALIZER;
+pthread_cond_t cond_logger = PTHREAD_COND_INITIALIZER;
 
 struct LinkedList *List;
 
-// This function alternates data in '/proc/stat' file as the program is run on Mac device
-// On Mac the program can be used only for demo
-void alternate_data() {
-    FILE *file = fopen(PROC_STAT_FILE, "w");
-    if (file == NULL) {
-        printf("Error opening file\n");
-        pthread_exit(NULL);
-    }
+pthread_t threads[NUM_THREADS];
 
-    if (List->head == NULL) {
-        printf("Linked list is empty.\n");
-        return;
-    }
-    struct Node *CurrentNode = List->head;
-
-    // Generate a random offset between -10 and 10
-    int inc = rand() % 21 - 10;
-
-    struct CPU_Stats stats;
-    stats = getAtPosition(List, 0)->data;
-    fprintf(file, "%s %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu\n",
-            stats.name, stats.user+(abs(inc)*8 < stats.user? inc*8 : stats.user),
-            stats.nice+(abs(inc)*8 < stats.nice? inc*8 : stats.nice), 
-            stats.system+(abs(inc)*8 < stats.system? inc*8 : stats.system), 
-            stats.idle+(abs(inc)*8 < stats.idle? inc*8 : stats.idle), 
-            stats.iowait+(abs(inc)*8 < stats.iowait? inc*8 : stats.iowait), 
-            stats.irq, 
-            stats.softirq+(abs(inc)*8 < stats.softirq? inc*8 : stats.softirq), 
-            stats.steal, stats.guest, 
-            stats.guest_nice);
-    for (size_t i = 1; i < List->size-1; i++) {
-        stats = getAtPosition(List, i)->data;
-        fprintf(file, "%s %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu\n",
-            stats.name, stats.user+(abs(inc) < stats.user? inc : stats.user),
-            stats.nice+(abs(inc) < stats.nice? inc : stats.nice), 
-            stats.system+(abs(inc) < stats.system? inc : stats.system), 
-            stats.idle+(abs(inc) < stats.idle? inc : stats.idle), 
-            stats.iowait+(abs(inc) < stats.iowait? inc : stats.iowait), 
-            stats.irq, 
-            stats.softirq+(abs(inc) < stats.softirq? inc : stats.softirq), 
-            stats.steal, stats.guest, 
-            stats.guest_nice);
-    }
-    stats = getAtPosition(List, List->size-1)->data;
-    fprintf(file, "%s %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu\n",
-            stats.name, stats.user, stats.nice, stats.system, stats.idle, stats.iowait, stats.irq, stats.softirq, stats.steal, stats.guest, stats.guest_nice);
-
-    fclose(file);
+double calculate_cpu_usage(long long unsigned totalDiff, long long unsigned idleDiff) {
+    return totalDiff != 0 ? ((double)(totalDiff - idleDiff) / totalDiff * 100.0) : 0;
 }
 
 void *thread_reader(void *arg) {
@@ -93,11 +52,8 @@ void *thread_reader(void *arg) {
 
     while (true) {
         pthread_mutex_lock(&mutex);
-        if (launched) {
-            pthread_cond_wait(&cond_analyze, &mutex);
-            printf("Cond printer signal received\n");
-            sleep(1);
-        } else launched = true;
+        while (!flag_read) pthread_cond_wait(&cond_analyze, &mutex);
+        flag_read = false;
 
         file = fopen(PROC_STAT_FILE, "r");
         if (file == NULL) {
@@ -132,13 +88,12 @@ void *thread_reader(void *arg) {
 
         fclose(file);
 
-        #ifdef __APPLE__
-            alternate_data();
-        #endif 
+        sleep(1);
 
+        flag_analyze = true;
+        signal_watchdog_read = true;
         pthread_cond_signal(&cond_read);
         pthread_mutex_unlock(&mutex);
-        signal_watchdog_read = true;
     }
 
     pthread_exit(NULL);
@@ -161,9 +116,8 @@ void *thread_analyzer(void *arg) {
 
     while (true) {
         pthread_mutex_lock(&mutex);
-        pthread_cond_wait(&cond_read, &mutex);
-
-        printf("Cond read signal received\n");
+        while (!flag_analyze) pthread_cond_wait(&cond_read, &mutex);
+        flag_analyze = false;
 
         stats = getAtPosition(List, 0)->data;
         
@@ -174,12 +128,17 @@ void *thread_analyzer(void *arg) {
         totalDiff = currTotal - prevTotal;
         idleDiff = currIdle - prevIdle;
 
-        if (idleDiff != totalDiff) usage = (usage + ((double)(totalDiff - idleDiff) / totalDiff * 100.0)) / 2;
+        if (idleDiff != totalDiff) usage = (usage + calculate_cpu_usage(totalDiff, idleDiff)) / 2;
 
         prevIdle = currIdle;
         prevNonIdle = currNonIdle;
         prevTotal = currTotal;
 
+        #ifdef __APPLE__
+            alternate_data(List);
+        #endif 
+
+        flag_read = true;
         signal_watchdog_analyze = true;
         pthread_cond_signal(&cond_analyze);
         pthread_mutex_unlock(&mutex);
@@ -192,8 +151,9 @@ void *thread_printer(void *arg) {
     while (true) {
         printf("CPU Usage: %.2f%%\n", usage);
         sleep(1);
+
         signal_watchdog_print = true;
-        pthread_cond_signal(&cond_printer);
+        flag_print = true;
     }
 
     pthread_exit(NULL);
@@ -234,6 +194,13 @@ void *thread_logger(void *arg) {
     time_t currentTime;
     struct tm* timeInfo = NULL;
 
+    file = fopen("log.txt", "w");
+    if (file == NULL) {
+        printf("Error opening log file.\n");
+        pthread_exit(NULL);
+    }
+    fclose(file);
+
     while (true) {
         currentTime = time(NULL);
         timeInfo = localtime(&currentTime);
@@ -247,15 +214,16 @@ void *thread_logger(void *arg) {
             pthread_exit(NULL);
         }
 
-        pthread_cond_wait(&cond_read, &mutex);
+        while (!flag_read);
         fprintf(file, "[%s] %s\n", timestamp, " - Reader signal");
         signal_watchdog_log = true;
 
-        pthread_cond_wait(&cond_analyze, &mutex);
+        while (!flag_analyze);
         fprintf(file, "[%s] %s\n", timestamp, " - Analyzer signal");
         signal_watchdog_log = true;
 
-        pthread_cond_wait(&cond_printer, &mutex);
+        while (!flag_print);
+        flag_print = false;
         fprintf(file, "[%s] %s\n", timestamp, " - Printer signal");
         signal_watchdog_log = true;
 
@@ -265,23 +233,35 @@ void *thread_logger(void *arg) {
     pthread_exit(NULL);
 }
 
-void *thread_sigterm_handler(void *arg) {
-    pthread_exit(NULL);
+void sigterm_handler(int s) {
+    printf("Received SIGTERM signal. Terminating...\n");
+    
+    for (int i = 0; i < NUM_THREADS; i++) {
+        if (pthread_join(threads[i], NULL) != 0) {
+            printf("Error joining thread %d!\n", i);
+            exit(-1);
+        }
+    }
+
+    pthread_mutex_destroy(&mutex);
+
+    pthread_cond_destroy(&cond_read);
+    pthread_cond_destroy(&cond_analyze);
+    pthread_cond_destroy(&cond_printer);
+    pthread_cond_destroy(&cond_watchdog);
+    pthread_cond_destroy(&cond_logger);
+
+    freeLinkedList(List);
+    free(List);
+
+    exit(0);
 }
 
 int main() {
+    signal(SIGTERM, sigterm_handler);
+
     srand(time(NULL));
 
-    pthread_mutex_init(&mutex, NULL);
-
-    pthread_cond_init(&cond_read, NULL);
-    pthread_cond_init(&cond_analyze, NULL);
-    pthread_cond_init(&cond_printer, NULL);
-    pthread_cond_init(&cond_watchdog, NULL);
-    pthread_cond_init(&cond_logger, NULL);
-    pthread_cond_init(&cond_sigterm, NULL);
-
-    pthread_t threads[NUM_THREADS];
     List = NULL;
 
     if (pthread_create(&threads[0], NULL, thread_reader, NULL) != 0) {
@@ -309,25 +289,25 @@ int main() {
         exit(-1);
     }
 
-    if (pthread_create(&threads[5], NULL, thread_sigterm_handler, NULL) != 0) {
-        printf("Error creating thread sigterm handler!\n");
-        exit(-1);
-    }
+    while (true);
 
-    for (int i = 0; i < NUM_THREADS; i++) {
-        if (pthread_join(threads[i], NULL) != 0) {
-            printf("Error joining thread %d!\n", i);
-            exit(-1);
-        }
-    }
+    // for (int i = 0; i < NUM_THREADS; i++) {
+    //     if (pthread_join(threads[i], NULL) != 0) {
+    //         printf("Error joining thread %d!\n", i);
+    //         exit(-1);
+    //     }
+    // }
 
-    pthread_mutex_destroy(&mutex);
+    // pthread_mutex_destroy(&mutex);
 
-    pthread_cond_destroy(&cond_read);
-    pthread_cond_destroy(&cond_analyze);
-    pthread_cond_destroy(&cond_printer);
-    pthread_cond_destroy(&cond_watchdog);
-    pthread_cond_destroy(&cond_logger);
-    pthread_cond_destroy(&cond_sigterm);
+    // pthread_cond_destroy(&cond_read);
+    // pthread_cond_destroy(&cond_analyze);
+    // pthread_cond_destroy(&cond_printer);
+    // pthread_cond_destroy(&cond_watchdog);
+    // pthread_cond_destroy(&cond_logger);
+
+    // freeLinkedList(List);
+    // free(List);
+
     return 0;
 }
