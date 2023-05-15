@@ -4,6 +4,7 @@
 #include <string.h>
 #include <stdbool.h>
 #include <unistd.h>
+#include <time.h>
 
 #include "etc/linked_list.c"
 
@@ -13,16 +14,14 @@
 
 #ifdef __APPLE__
     #define PROC_STAT_FILE "proc/stat"
-#endif
-
-#ifdef __linux__
+#elif __linux__
     #define PROC_STAT_FILE "/proc/stat"
 #endif
 
 bool launched = false;
 
-int inc = 10;
-bool odd = false;
+// int inc = 10;
+// bool odd = false;
 double usage = 0.0;
 
 pthread_mutex_t mutex;
@@ -38,6 +37,7 @@ struct LinkedList *List;
 struct LinkedList *PreviousList;
 
 // This function alternates data in '/proc/stat' file as the program is run on Mac device
+// On Mac the program can be used only for demo
 void alternate_data() {
     FILE *file = fopen(PROC_STAT_FILE, "w");
     if (file == NULL) {
@@ -51,25 +51,37 @@ void alternate_data() {
     }
     struct Node *CurrentNode = List->head;
 
+    // Generate a random offset between -10 and 10
+    int inc = rand() % 21 - 10;
+
     struct CPU_Stats stats;
     stats = getAtPosition(List, 0)->data;
     fprintf(file, "%s %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu\n",
-            stats.name, stats.user+(inc*8), stats.nice+(inc*8), stats.system+(inc*8), stats.idle+(inc*8), stats.iowait, stats.irq, stats.softirq+(inc*8), stats.steal, stats.guest, stats.guest_nice);
+            stats.name, stats.user+(abs(inc)*8 < stats.user? inc*8 : stats.user),
+            stats.nice+(abs(inc)*8 < stats.nice? inc*8 : stats.nice), 
+            stats.system+(abs(inc)*8 < stats.system? inc*8 : stats.system), 
+            stats.idle+(abs(inc)*8 < stats.idle? inc*8 : stats.idle), 
+            stats.iowait+(abs(inc)*8 < stats.iowait? inc*8 : stats.iowait), 
+            stats.irq, 
+            stats.softirq+(abs(inc)*8 < stats.softirq? inc*8 : stats.softirq), 
+            stats.steal, stats.guest, 
+            stats.guest_nice);
     for (size_t i = 1; i < List->size-1; i++) {
         stats = getAtPosition(List, i)->data;
-        fprintf(file, "%s %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu\n", 
-                stats.name, stats.user+inc, stats.nice+inc, stats.system+inc, stats.idle+inc, stats.iowait, stats.irq, stats.softirq+inc, stats.steal, stats.guest, stats.guest_nice);
+        fprintf(file, "%s %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu\n",
+            stats.name, stats.user+(abs(inc) < stats.user? inc : stats.user),
+            stats.nice+(abs(inc) < stats.nice? inc : stats.nice), 
+            stats.system+(abs(inc) < stats.system? inc : stats.system), 
+            stats.idle+(abs(inc) < stats.idle? inc : stats.idle), 
+            stats.iowait+(abs(inc) < stats.iowait? inc : stats.iowait), 
+            stats.irq, 
+            stats.softirq+(abs(inc) < stats.softirq? inc : stats.softirq), 
+            stats.steal, stats.guest, 
+            stats.guest_nice);
     }
     stats = getAtPosition(List, List->size-1)->data;
     fprintf(file, "%s %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu\n",
             stats.name, stats.user, stats.nice, stats.system, stats.idle, stats.iowait, stats.irq, stats.softirq, stats.steal, stats.guest, stats.guest_nice);
-
-    if (odd) {
-        inc += 1;
-    } else {
-        inc -= 2;
-    }
-    odd = !odd;
 
     fclose(file);
 }
@@ -85,11 +97,10 @@ void *thread_reader(void *arg) {
         if (launched) {
             //pthread_cond_wait(&cond_printer, &mutex);
             pthread_cond_wait(&cond_analyze, &mutex);
-            printf("Cond printer signal recieved\n");
+            printf("Cond printer signal received\n");
             sleep(1);
-        } else {
-            launched = true;
-        }
+        } else launched = true;
+
         file = fopen(PROC_STAT_FILE, "r");
         if (file == NULL) {
             printf("Error opening file\n");
@@ -157,7 +168,7 @@ void *thread_analyzer(void *arg) {
         
         pthread_cond_wait(&cond_read, &mutex);
 
-        printf("Cond read signal recieved\n");
+        printf("Cond read signal received\n");
 
         stats = getAtPosition(List, 0)->data;
         
@@ -210,6 +221,8 @@ void *thread_sigterm_handler(void *arg) {
 }
 
 int main() {
+    srand(time(NULL));
+    
     pthread_mutex_init(&mutex, NULL);
 
     pthread_cond_init(&cond_read, NULL);
